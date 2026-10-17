@@ -32,7 +32,7 @@ def get_current_user_and_business(business_id: int, nusa_session: str = Cookie(N
     if not business:
         raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
     
-    if business.owner_user_id != user.id and user.role != UserRole.EMPLOYER:
+    if business.owner_user_id != user.id and user.role != UserRole.EMPLOYER_STAFF:
         raise HTTPException(status_code=403, detail="Akses ditolak ke bisnis ini.")
         
     return user, business
@@ -48,8 +48,8 @@ def create_business(payload: BusinessCreate, nusa_session: str = Cookie(None), d
         raise HTTPException(status_code=401, detail="Sesi tidak valid.")
     
     user = db.query(User).filter(User.id == session_record.user_id).first()
-    if user.role != UserRole.EMPLOYER:
-        raise HTTPException(status_code=403, detail="Hanya role EMPLOYER yang dapat membuat bisnis.")
+    if user.role != UserRole.EMPLOYER_OWNER:
+        raise HTTPException(status_code=403, detail="Hanya role EMPLOYER_OWNER yang dapat membuat bisnis.")
 
     new_business = Business(
         name=payload.name,

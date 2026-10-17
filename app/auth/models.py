@@ -4,7 +4,8 @@ import enum
 from app.core.database import Base
 
 class UserRole(str, enum.Enum):
-    EMPLOYER = "EMPLOYER"
+    EMPLOYER_OWNER = "EMPLOYER_OWNER"
+    EMPLOYER_STAFF = "EMPLOYER_STAFF"
     WORKER = "WORKER"
 
 class User(Base):

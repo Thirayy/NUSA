@@ -24,12 +24,20 @@ def get_current_user_from_cookie(nusa_session: str = Cookie(None), db: DBSession
         raise HTTPException(status_code=401, detail="Pengguna tidak ditemukan.")
     return user
 
-# --- Employer: Membuat Work Record ---
+# --- Employer / Staff: Membuat Work Record ---
 @router.post("/businesses/{business_id}/work-records", response_model=WorkRecordResponse, status_code=status.HTTP_201_CREATED)
 def create_work_record(business_id: int, payload: WorkRecordCreate, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
     user = get_current_user_from_cookie(nusa_session, db)
     business = db.query(Business).filter(Business.id == business_id).first()
-    if not business or business.owner_user_id != user.id:
+    
+    if not business:
+        raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
+
+    # Izinkan jika user adalah owner ATAU memiliki role employer (owner/staff)
+    is_owner = business.owner_user_id == user.id
+    is_employer_role = user.role in [UserRole.EMPLOYER_OWNER, UserRole.EMPLOYER_STAFF]
+
+    if not (is_owner or is_employer_role):
         raise HTTPException(status_code=403, detail="Akses ditolak ke bisnis ini.")
 
     record = WorkRecord(
@@ -47,7 +55,7 @@ def create_work_record(business_id: int, payload: WorkRecordCreate, nusa_session
     db.refresh(record)
     return record
 
-# --- Employer: Verifikasi Work Record ---
+# --- Employer / Staff: Verifikasi Work Record ---
 @router.patch("/work-records/{work_record_id}/verify")
 def verify_work_record(work_record_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
     user = get_current_user_from_cookie(nusa_session, db)
@@ -56,8 +64,14 @@ def verify_work_record(work_record_id: int, nusa_session: str = Cookie(None), db
         raise HTTPException(status_code=404, detail="Work Record tidak ditemukan.")
 
     business = db.query(Business).filter(Business.id == record.business_id).first()
-    if business.owner_user_id != user.id:
-        raise HTTPException(status_code=403, detail="Hanya pemilik bisnis yang dapat memverifikasi catatan.")
+    if not business:
+        raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
+
+    is_owner = business.owner_user_id == user.id
+    is_employer_role = user.role in [UserRole.EMPLOYER_OWNER, UserRole.EMPLOYER_STAFF]
+
+    if not (is_owner or is_employer_role):
+        raise HTTPException(status_code=403, detail="Akses ditolak untuk memverifikasi catatan ini.")
 
     record.verification_status = VerificationStatus.VERIFIED
     record.verified_by_user_id = user.id
@@ -85,9 +99,9 @@ def claim_work_record(work_record_id: int, nusa_session: str = Cookie(None), db:
     claim = WorkRecordClaim(
         work_record_id=record.id,
         worker_user_id=user.id,
-        status="APPROVED" # Otomatis disetujui atau pending sesuai alur verifikasi aman[cite: 6]
+        status="APPROVED"
     )
-    record.worker_user_id = user.id # Tautkan ke akun worker
+    record.worker_user_id = user.id
     db.add(claim)
     db.commit()
 
@@ -124,7 +138,7 @@ def get_my_work_passport(nusa_session: str = Cookie(None), db: DBSession = Depen
         "worker_user_id": user.id,
         "verified_experiences": verified_records,
         "pending_or_unverified_experiences": unverified_records,
-        "disclaimer": "Catatan yang ditampilkan terbagi berdasarkan status verifikasi pemberi kerja[cite: 6]."
+        "disclaimer": "Catatan yang ditampilkan terbagi berdasarkan status verifikasi pemberi kerja."
     }
 
 # --- Worker: Meminta Koreksi Catatan ---
