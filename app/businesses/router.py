@@ -15,6 +15,8 @@ from app.businesses.schemas import (
 
 router = APIRouter(prefix="/api/v1/businesses", tags=["Business Core"])
 
+from app.auth.models import User, Session as UserSession, UserRole
+
 def get_current_user_and_business(business_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)) -> tuple[User, Business]:
     if not nusa_session:
         raise HTTPException(status_code=401, detail="Sesi tidak ditemukan.")
@@ -32,7 +34,11 @@ def get_current_user_and_business(business_id: int, nusa_session: str = Cookie(N
     if not business:
         raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
     
-    if business.owner_user_id != user.id and user.role != UserRole.EMPLOYER_STAFF:
+    # Izinkan jika user adalah owner ATAU memiliki role employer (owner/staff)
+    is_owner = business.owner_user_id == user.id
+    is_employer_role = user.role in [UserRole.EMPLOYER_OWNER, UserRole.EMPLOYER_STAFF]
+    
+    if not (is_owner or is_employer_role):
         raise HTTPException(status_code=403, detail="Akses ditolak ke bisnis ini.")
         
     return user, business
@@ -48,8 +54,10 @@ def create_business(payload: BusinessCreate, nusa_session: str = Cookie(None), d
         raise HTTPException(status_code=401, detail="Sesi tidak valid.")
     
     user = db.query(User).filter(User.id == session_record.user_id).first()
+    
+    # Periksa apakah user adalah EMPLOYER_OWNER yang sah
     if user.role != UserRole.EMPLOYER_OWNER:
-        raise HTTPException(status_code=403, detail="Hanya role EMPLOYER_OWNER yang dapat membuat bisnis.")
+        raise HTTPException(status_code=403, detail="Hanya role EMPLOYER_OWNER yang dapat membuat profil bisnis.")
 
     new_business = Business(
         name=payload.name,

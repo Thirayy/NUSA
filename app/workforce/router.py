@@ -60,13 +60,18 @@ def get_my_worker_profile(nusa_session: str = Cookie(None), db: DBSession = Depe
         raise HTTPException(status_code=404, detail="Profil pekerja belum dibuat.")
     return profile
 
-# --- Lowongan Kerja (Jobs) oleh Employer ---
+# --- Lowongan Kerja (Jobs) oleh Employer owner ---
 @router.post("/businesses/{business_id}/jobs", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
 def create_job_posting(business_id: int, payload: JobCreate, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
     user = get_current_user_from_cookie(nusa_session, db)
     business = db.query(Business).filter(Business.id == business_id).first()
-    if not business or business.owner_user_id != user.id:
-        raise HTTPException(status_code=403, detail="Akses ditolak ke bisnis ini.")
+    
+    if not business:
+        raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
+
+    # Hanya Owner sah yang boleh membuat lowongan
+    if business.owner_user_id != user.id or user.role != UserRole.EMPLOYER_OWNER:
+        raise HTTPException(status_code=403, detail="Hanya Pemilik Usaha (Owner) yang berhak mempublikasikan lowongan kerja.")
 
     job = Job(
         business_id=business.id,
@@ -111,6 +116,15 @@ def apply_to_job(job_id: int, nusa_session: str = Cookie(None), db: DBSession = 
     db.commit()
     db.refresh(application)
     return application
+
+
+# --- AI / Transparent Job Matching Explanation ---
+@router.get("/worker/applications", response_model=List[ApplicationResponse])
+def get_my_applications(nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+    user = get_current_user_from_cookie(nusa_session, db)
+    if user.role != UserRole.WORKER:
+        raise HTTPException(status_code=403, detail="Hanya role WORKER yang dapat melihat lamaran.")
+    return db.query(Application).filter(Application.worker_user_id == user.id).all()
 
 # --- AI / Transparent Job Matching Explanation ---
 @router.get("/jobs/{job_id}/matches")

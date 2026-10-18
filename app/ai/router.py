@@ -10,7 +10,7 @@ from app.ai.provider import ai_provider
 
 router = APIRouter(prefix="/api/v1/businesses/{business_id}/ai", tags=["AI Services"])
 
-def get_verified_business_member(business_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)) -> tuple[User, Business]:
+def get_verified_business_owner(business_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)) -> tuple[User, Business]:
     if not nusa_session:
         raise HTTPException(status_code=401, detail="Sesi tidak ditemukan.")
     token_hash_val = hash_token(nusa_session)
@@ -21,21 +21,14 @@ def get_verified_business_member(business_id: int, nusa_session: str = Cookie(No
     user = db.query(User).filter(User.id == session_record.user_id).first()
     business = db.query(Business).filter(Business.id == business_id).first()
     
-    if not business:
-        raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
-        
-    # Izinkan jika user adalah Owner ATAU jika rolenya adalah employer/staff
-    is_owner = business.owner_user_id == user.id
-    is_employer_role = user.role in [UserRole.EMPLOYER_OWNER, UserRole.EMPLOYER_STAFF]
-    
-    if not (is_owner or is_employer_role):
-        raise HTTPException(status_code=403, detail="Akses ditolak ke data bisnis ini.")
+    if not business or business.owner_user_id != user.id or user.role != UserRole.EMPLOYER_OWNER:
+        raise HTTPException(status_code=403, detail="Akses eksklusif Pemilik Usaha (Owner) diperlukan untuk Decision Room.")
         
     return user, business
 
 @router.post("/decision-room")
 def ai_decision_room(business_id: int, payload: dict, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
-    _, business = get_verified_business_member(business_id, nusa_session, db)
+    _, business = get_verified_business_owner(business_id, nusa_session, db)
     user_question = payload.get("question", "Bagaimana kondisi bisnis saya?")
 
     # Ambil metrik deterministik langsung dari database backend
