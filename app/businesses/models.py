@@ -12,6 +12,7 @@ class Business(Base):
     category = Column(String, nullable=False)
     location = Column(String, nullable=False)
     owner_user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    business_code = Column(String, unique=True, index=True, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     products = relationship("Product", back_populates="business", cascade="all, delete-orphan")

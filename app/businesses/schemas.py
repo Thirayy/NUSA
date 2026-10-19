@@ -19,6 +19,7 @@ class BusinessResponse(BaseModel):
     category: str
     location: str
     owner_user_id: int
+    business_code: str  # <-- Tambahkan ini agar kode unik muncul di dashboard owner
 
     class Config:
         from_attributes = True

@@ -1,16 +1,18 @@
 from fastapi import APIRouter, Depends, HTTPException, Cookie, status
 from sqlalchemy.orm import Session as DBSession
-from datetime import datetime, timezone
 from typing import List
 
 from app.core.database import get_db
 from app.core.security import hash_token
 from app.auth.models import User, Session as UserSession, UserRole
 from app.businesses.models import Business
-from app.work_records.models import WorkRecord, WorkRecordClaim, VerificationStatus
-from app.work_records.schemas import WorkRecordCreate, WorkRecordResponse, CorrectionRequestCreate
+from app.workforce.models import WorkerProfile, Job, Application, JobStatus, ApplicationStatus, WorkerSkill, Skill
+from app.workforce.schemas import (
+    WorkerProfileCreate, WorkerProfileResponse,
+    JobCreate, JobResponse, ApplicationResponse
+)
 
-router = APIRouter(prefix="/api/v1", tags=["Work Records & Passport"])
+router = APIRouter(prefix="/api/v1", tags=["Workforce & Jobs"])
 
 def get_current_user_from_cookie(nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)) -> User:
     if not nusa_session:
@@ -24,132 +26,149 @@ def get_current_user_from_cookie(nusa_session: str = Cookie(None), db: DBSession
         raise HTTPException(status_code=401, detail="Pengguna tidak ditemukan.")
     return user
 
-# --- Employer / Staff: Membuat Work Record ---
-@router.post("/businesses/{business_id}/work-records", response_model=WorkRecordResponse, status_code=status.HTTP_201_CREATED)
-def create_work_record(business_id: int, payload: WorkRecordCreate, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+# --- Profil Pekerja ---
+@router.post("/worker/profile", response_model=WorkerProfileResponse, status_code=status.HTTP_201_CREATED)
+def create_or_update_worker_profile(payload: WorkerProfileCreate, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+    user = get_current_user_from_cookie(nusa_session, db)
+    if user.role != UserRole.WORKER:
+        raise HTTPException(status_code=403, detail="Hanya role WORKER yang dapat membuat profil pekerja.")
+    
+    profile = db.query(WorkerProfile).filter(WorkerProfile.user_id == user.id).first()
+    if profile:
+        profile.display_name = payload.display_name
+        profile.summary = payload.summary
+        profile.location = payload.location
+        profile.availability = payload.availability
+    else:
+        profile = WorkerProfile(
+            user_id=user.id,
+            display_name=payload.display_name,
+            summary=payload.summary,
+            location=payload.location,
+            availability=payload.availability
+        )
+        db.add(profile)
+    db.commit()
+    db.refresh(profile)
+    return profile
+
+@router.get("/worker/profile/me", response_model=WorkerProfileResponse)
+def get_my_worker_profile(nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+    user = get_current_user_from_cookie(nusa_session, db)
+    profile = db.query(WorkerProfile).filter(WorkerProfile.user_id == user.id).first()
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profil pekerja belum dibuat.")
+    return profile
+
+# --- Lowongan Kerja (Jobs) oleh Employer Owner ---
+@router.post("/businesses/{business_id}/jobs", response_model=JobResponse, status_code=status.HTTP_201_CREATED)
+def create_job_posting(business_id: int, payload: JobCreate, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
     user = get_current_user_from_cookie(nusa_session, db)
     business = db.query(Business).filter(Business.id == business_id).first()
     
     if not business:
         raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
 
-    # Izinkan jika user adalah owner ATAU memiliki role employer (owner/staff)
-    is_owner = business.owner_user_id == user.id
-    is_employer_role = user.role in [UserRole.EMPLOYER_OWNER, UserRole.EMPLOYER_STAFF]
+    # Hanya Pemilik Usaha (Owner) sah yang berhak membuat lowongan
+    if business.owner_user_id != user.id or user.role != UserRole.EMPLOYER_OWNER:
+        raise HTTPException(status_code=403, detail="Hanya Pemilik Usaha (Owner) yang berhak mempublikasikan lowongan kerja.")
 
-    if not (is_owner or is_employer_role):
-        raise HTTPException(status_code=403, detail="Akses ditolak ke bisnis ini.")
-
-    record = WorkRecord(
+    job = Job(
         business_id=business.id,
-        worker_user_id=payload.worker_user_id,
         title=payload.title,
-        tasks=payload.tasks,
-        skills=payload.skills,
-        start_date=payload.start_date,
-        end_date=payload.end_date,
-        verification_status=VerificationStatus.PENDING
+        description=payload.description,
+        location=payload.location,
+        employment_type=payload.employment_type,
+        requirements=payload.requirements,
+        status=JobStatus.OPEN
     )
-    db.add(record)
+    db.add(job)
     db.commit()
-    db.refresh(record)
-    return record
+    db.refresh(job)
+    return job
 
-# --- Employer / Staff: Verifikasi Work Record ---
-@router.patch("/work-records/{work_record_id}/verify")
-def verify_work_record(work_record_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
-    user = get_current_user_from_cookie(nusa_session, db)
-    record = db.query(WorkRecord).filter(WorkRecord.id == work_record_id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Work Record tidak ditemukan.")
+@router.get("/jobs", response_model=List[JobResponse])
+def list_open_jobs(db: DBSession = Depends(get_db)):
+    return db.query(Job).filter(Job.status == JobStatus.OPEN).all()
 
-    business = db.query(Business).filter(Business.id == record.business_id).first()
-    if not business:
-        raise HTTPException(status_code=404, detail="Bisnis tidak ditemukan.")
-
-    is_owner = business.owner_user_id == user.id
-    is_employer_role = user.role in [UserRole.EMPLOYER_OWNER, UserRole.EMPLOYER_STAFF]
-
-    if not (is_owner or is_employer_role):
-        raise HTTPException(status_code=403, detail="Akses ditolak untuk memverifikasi catatan ini.")
-
-    record.verification_status = VerificationStatus.VERIFIED
-    record.verified_by_user_id = user.id
-    record.verified_at = datetime.now(timezone.utc)
-    db.commit()
-
-    return {"message": "Work Record berhasil diverifikasi dan sah masuk ke Work Passport.", "record_id": record.id}
-
-# --- Worker: Mengklaim Work Record ---
-@router.post("/work-records/{work_record_id}/claim", status_code=status.HTTP_201_CREATED)
-def claim_work_record(work_record_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+# --- Lamaran Pekerjaan (Applications) oleh Worker ---
+@router.post("/jobs/{job_id}/applications", status_code=status.HTTP_201_CREATED, response_model=ApplicationResponse)
+def apply_to_job(job_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
     user = get_current_user_from_cookie(nusa_session, db)
     if user.role != UserRole.WORKER:
-        raise HTTPException(status_code=403, detail="Hanya role WORKER yang dapat mengklaim rekam kerja.")
-
-    record = db.query(WorkRecord).filter(WorkRecord.id == work_record_id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Work Record tidak ditemukan.")
-
-    # Cek klaim ganda
-    existing_claim = db.query(WorkRecordClaim).filter(WorkRecordClaim.work_record_id == record.id, WorkRecordClaim.worker_user_id == user.id).first()
-    if existing_claim:
-        raise HTTPException(status_code=400, detail="Anda sudah mengajukan klaim untuk catatan ini.")
-
-    claim = WorkRecordClaim(
-        work_record_id=record.id,
-        worker_user_id=user.id,
-        status="APPROVED"
-    )
-    record.worker_user_id = user.id
-    db.add(claim)
-    db.commit()
-
-    return {"message": "Work Record berhasil diklaim dan ditautkan ke akun Anda."}
-
-# --- Worker: Melihat Work Passport Miliknya ---
-@router.get("/work-passport/me")
-def get_my_work_passport(nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
-    user = get_current_user_from_cookie(nusa_session, db)
-    if user.role != UserRole.WORKER:
-        raise HTTPException(status_code=403, detail="Hanya role WORKER yang memiliki Work Passport.")
-
-    records = db.query(WorkRecord).filter(WorkRecord.worker_user_id == user.id).all()
+        raise HTTPException(status_code=403, detail="Hanya pekerja yang dapat melamar lowongan.")
     
-    verified_records = []
-    unverified_records = []
+    job = db.query(Job).filter(Job.id == job_id, Job.status == JobStatus.OPEN).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Lowongan tidak ditemukan atau sudah ditutup.")
 
-    for rec in records:
-        data = {
-            "id": rec.id,
-            "title": rec.title,
-            "tasks": rec.tasks,
-            "skills": rec.skills,
-            "start_date": rec.start_date,
-            "end_date": rec.end_date,
-            "verification_status": rec.verification_status
-        }
-        if rec.verification_status == VerificationStatus.VERIFIED:
-            verified_records.append(data)
-        else:
-            unverified_records.append(data)
+    # Cegah lamaran ganda
+    existing = db.query(Application).filter(Application.job_id == job_id, Application.worker_user_id == user.id).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Anda sudah melamar lowongan ini.")
 
-    return {
-        "worker_user_id": user.id,
-        "verified_experiences": verified_records,
-        "pending_or_unverified_experiences": unverified_records,
-        "disclaimer": "Catatan yang ditampilkan terbagi berdasarkan status verifikasi pemberi kerja."
-    }
-
-# --- Worker: Meminta Koreksi Catatan ---
-@router.post("/work-records/{work_record_id}/correction-requests")
-def request_work_record_correction(work_record_id: int, payload: CorrectionRequestCreate, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
-    user = get_current_user_from_cookie(nusa_session, db)
-    record = db.query(WorkRecord).filter(WorkRecord.id == work_record_id, WorkRecord.worker_user_id == user.id).first()
-    if not record:
-        raise HTTPException(status_code=404, detail="Work Record tidak ditemukan atau tidak terkait dengan Anda.")
-
-    record.verification_status = VerificationStatus.DISPUTED
+    application = Application(
+        job_id=job.id,
+        worker_user_id=user.id,
+        status=ApplicationStatus.APPLIED
+    )
+    db.add(application)
     db.commit()
+    db.refresh(application)
+    return application
 
-    return {"message": "Permintaan koreksi berhasil dikirim ke pemberi kerja. Status catatan diubah menjadi DISPUTED."}
+@router.get("/worker/applications", response_model=List[ApplicationResponse])
+def get_my_applications(nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+    user = get_current_user_from_cookie(nusa_session, db)
+    if user.role != UserRole.WORKER:
+        raise HTTPException(status_code=403, detail="Hanya role WORKER yang dapat melihat lamaran.")
+    return db.query(Application).filter(Application.worker_user_id == user.id).all()
+
+# --- Analisis & Kecocokan Kandidat (AI / Transparent Matching) ---
+@router.get("/jobs/{job_id}/matches")
+def explain_job_matches(job_id: int, nusa_session: str = Cookie(None), db: DBSession = Depends(get_db)):
+    user = get_current_user_from_cookie(nusa_session, db)
+    job = db.query(Job).filter(Job.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Lowongan tidak ditemukan.")
+
+    business = db.query(Business).filter(Business.id == job.business_id).first()
+    if not business or business.owner_user_id != user.id:
+        raise HTTPException(status_code=403, detail="Hanya pemilik bisnis yang dapat melihat analisis kecocokan kandidat.")
+
+    applications = db.query(Application).filter(Application.job_id == job_id).all()
+    results = []
+
+    for app in applications:
+        worker_profile = db.query(WorkerProfile).filter(WorkerProfile.user_id == app.worker_user_id).first()
+        worker_skills = db.query(WorkerSkill).filter(WorkerSkill.worker_user_id == app.worker_user_id).all()
+        skill_ids = [ws.skill_id for ws in worker_skills]
+        skills_names = [s.name for s in db.query(Skill).filter(Skill.id.in_(skill_ids)).all()] if skill_ids else []
+
+        match_score = 50
+        matching_factors = []
+        missing_factors = []
+
+        if worker_profile and worker_profile.location.lower() in job.location.lower():
+            match_score += 25
+            matching_factors.append("Lokasi sesuai dengan lowongan.")
+        else:
+            missing_factors.append("Lokasi berbeda.")
+
+        if len(skills_names) > 0:
+            match_score += 25
+            matching_factors.append(f"Memiliki keterampilan terdaftar: {', '.join(skills_names)}")
+        else:
+            missing_factors.append("Belum mencantumkan keterampilan.")
+
+        results.append({
+            "application_id": app.id,
+            "worker_user_id": app.worker_user_id,
+            "worker_name": worker_profile.display_name if worker_profile else "Tanpa Nama",
+            "match_score": match_score,
+            "matching_factors": matching_factors,
+            "missing_factors": missing_factors,
+            "status": app.status
+        })
+
+    return {"job_id": job.id, "job_title": job.title, "candidates_analysis": results}

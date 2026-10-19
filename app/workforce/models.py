@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum
+from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Enum, Boolean
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 import enum
@@ -17,6 +17,13 @@ class ApplicationStatus(str, enum.Enum):
 class EmployeeStatus(str, enum.Enum):
     ACTIVE = "ACTIVE"
     INACTIVE = "ACTIVE_ENDED"
+
+class VerificationStatus(str, enum.Enum):
+    DRAFT = "DRAFT"
+    PENDING = "PENDING"
+    VERIFIED = "VERIFIED"
+    DISPUTED = "DISPUTED"
+    REJECTED = "REJECTED"
 
 class WorkerProfile(Base):
     __tablename__ = "worker_profiles"
@@ -75,8 +82,23 @@ class Employee(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False)
-    worker_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True) # Dapat dibuat sebelum akun tertaut[cite: 6]
+    worker_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     position = Column(String, nullable=False)
     start_date = Column(String, nullable=False)
     end_date = Column(String, nullable=True)
     status = Column(Enum(EmployeeStatus), nullable=False, default=EmployeeStatus.ACTIVE)
+
+class WorkRecord(Base):
+    __tablename__ = "work_records"
+
+    id = Column(Integer, primary_key=True, index=True)
+    business_id = Column(Integer, ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False)
+    worker_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    title = Column(String, nullable=False)
+    tasks = Column(Text, nullable=False)
+    skills = Column(String, nullable=False)
+    start_date = Column(String, nullable=False)
+    end_date = Column(String, nullable=True)
+    is_verified = Column(Boolean, default=False, nullable=False)
+    verification_status = Column(Enum(VerificationStatus), nullable=False, default=VerificationStatus.PENDING)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
